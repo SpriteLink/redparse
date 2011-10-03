@@ -3,6 +3,16 @@
 import sys
 import re
 
+# a dict of VRF-IDs that we should ignore, only the keys are interesting
+ignore_vrfs = {
+        '100': 'mpls_monitor',
+        '210': 'SHDSL',
+        '250': 't2v-ems',
+        '504': 'sipnet',
+        '532': 'sipnet',
+        '10001': 'sipnet'
+        }
+
 
 class Config:
     def __init__(self, config):
@@ -13,10 +23,11 @@ class Config:
     def _parse_shite(self):
         for vrf_name in self.config:
             vrf = self.config[vrf_name]
-            if type(vrf) == dict and 'vpn_id' in vrf and vrf['vpn_id'] is not None:
-                self.vrfs[vrf['vpn_id']] = {}
-            else:
-                self.vrfs[''] = {}
+            if type(vrf) == dict and 'vpn_id' in vrf:
+                if vrf['vpn_id'] is not None:
+                    self.vrfs[vrf['vpn_id']] = vrf
+                else:
+                    self.vrfs[''] = vrf
 
 
 
@@ -98,7 +109,7 @@ class ParseRedback(object):
             for line in self.config:
                 #interface
                 if re.match('\sinterface', line, re.VERBOSE):
-                    if re.match('GE', line.split()[1], re.VERBOSE):
+                    if re.match('.*GE', line.split()[1]):
                         self.parent_intf = line.split()[1]
                         interface[self.parent_intf] = {}
                         if len(self.parent_intf.split('.')) == 2:
@@ -340,26 +351,55 @@ class ParseCisco():
     """ Parse cisco config
     """
     def __init__(self, cfg):
+        self.fh = open(cfg, "r")
+        self.config = self.fh.readlines()
 
         self.configuration = {} 
         self.configfile = cfg
+        self.es_ports = {}
         self._parseVRF(cfg)
+        self._find_ES_ports()
 
 
     def _parseVRF(self,cfg):
-        """Get all vrf 
+        """ Get all VRFs
         """
-        self.fh = open(cfg,"r")
-        self.config = self.fh.readlines()
         self.current_context = None
         self.text = None
 
         for line in self.config:
-            #ip vrf 1257:1274                                    
-            if re.match('ip\svrf\s[0-9]+:[0-9]+', line):
+            #ip vrf 1257:1274
+            rem = re.match('ip vrf (.+)', line)
+            if rem is not None:
                 self.vrf = line.split()[2]
-                self.configuration[self.vrf] = None        
+                self.current_context = rem.group(1).strip()
+                self.configuration[self.current_context] = {}
 
+            if self.current_context is not None:
+                if re.match(' rd ', line):
+                    # rd 1.3.3.7:1234
+                    rd = line.split()[1].strip()
+                    vpn_id = line.split(':')[1].strip()
+                    self.configuration[self.vrf]['vpn_id'] = vpn_id
+
+    def _find_ES_ports(self):
+        es_modules = {}
+
+        for line in self.config:
+            rem = re.match('!Slot ([0-9]+): .*ES\+', line)
+            if rem is not None:
+                es_modules[rem.group(1)] = True
+
+        for line in self.config:
+            rem = re.match('interface (?P<interface>(?P<if_type>[A-Za-z]+)(?P<slot>[0-9]+)/(?P<port>[0-9]+)(\.(?P<sub_if>[0-9]+))?)', line)
+            if rem is not None:
+                if rem.group('slot') in es_modules:
+                    port = rem.group('slot') + '/' + rem.group('port')
+                    vlan = rem.group('sub_if')
+
+                    if port not in self.es_ports:
+                        self.es_ports[port] = {}
+                    self.es_ports[port][vlan] = True
 
 
     def printConfig(self):
@@ -384,6 +424,7 @@ if __name__ == '__main__':
     parser = optparse.OptionParser()
     ##
     parser.add_option("--cmp-vrfs", action = "store_true", help = "Compare VRFs")
+    parser.add_option('--check-vlan', action = "store_true", help = "Check if there are VLAN collisions on the destination router/port")
     parser.add_option("-f", "--from-router", dest = "from_router", help = "From Router")
     parser.add_option("-t", "--to-router", dest = "to_router", help = "To Router")
     parser.add_option("-i", "--interface", dest = "to_int", help = "Interface on destination router")
@@ -414,16 +455,42 @@ if __name__ == '__main__':
     from_cfg = Config(from_router.configuration)
     to_cfg = Config(to_router.configuration)
 
+    # compare VRFs to determine whether we need to add anything
     if options.cmp_vrfs:
+        ignore = set(ignore_vrfs)
         l1, l2 = from_cfg.cmp_vrfs(to_cfg)
-        print "VRFs unique to ", options.from_router
+        print "We need to create the following VRFS in", options.to_router
+        # ignore the "global" vrf, which is stored as ''
+        l1 = l1 - set(('',))
+        l1 = l1 - ignore
         for vrf in sorted(l1, key=int):
-            print "  ", vrf
+            print " ", vrf
 
-        print "VRFs unique to ", options.to_router
-        for vrf in l2:
-            print "  ", vrf
-   
+    # check for VLAN collisions
+    if options.check_vlan:
+        if options.to_int is None:
+            print >> sys.stderr, "Please specify the 'destination interface'"
+            sys.exit(1)
+
+        if options.to_int not in to_router.es_ports:
+            print >> sys.stderr, "Destination port does not appear to be an ES+!"
+            sys.exit(1)
+
+        from_vlans = {}
+        for vrf_name in from_router.configuration:
+            vrf = from_router.configuration[vrf_name]
+            for if_name in vrf['interface']:
+                interface = vrf['interface'][if_name]
+                if 'binded' not in interface:
+                    next
+                if 'vlan_id' not in interface:
+                    vlan_id = 0
+                else:
+                    vlan_id = interface['vlan_id']
+                from_vlans[vlan_id] = interface
+        res = set(from_vlans).intersection(set(to_router.es_ports[options.to_int]))
+        print "Colliding VLANs:", res
+
 
     if options.listcontext:
         fromrouter.listContext() 
@@ -435,14 +502,6 @@ if __name__ == '__main__':
     
     def compareVRF(): 
         #compare vrf
-        specialVRF = {
-            '10001': 'sipnet',
-            '210': 'SHDSL',
-            '100': 'mpls_monitor',
-            '532': 'sipnet',
-            '504': 'sipnet',
-            '250': 't2v-ems'
-            }
         print ""
         print "Checking for missing vrf in " + options.torouter
         print ""
@@ -450,8 +509,8 @@ if __name__ == '__main__':
             if (fromrouter.configuration[vpn]['vpn_id'] is not None) and (len(fromrouter.configuration[vpn]['interface']) > 0):
                 rd = '1257:' + fromrouter.configuration[vpn]['vpn_id']
                 if not rd in torouter.configuration:
-                    if (fromrouter.configuration[vpn]['vpn_id'] in specialVRF) or (len(fromrouter.configuration[vpn]['vpn_id']) <> 4): 
-                        print '1257:'+fromrouter.configuration[vpn]['vpn_id'] + " SPECIAL VRF, conf manually"
+                    if (fromrouter.configuration[vpn]['vpn_id'] in ignore_vrf) or (len(fromrouter.configuration[vpn]['vpn_id']) <> 4): 
+                        print '1257:'+fromrouter.configuration[vpn]['vpn_id'] + " ignore_vrf VRF, conf manually"
                     else:
                         print "cpush -a --ios-file bgp-vpn-vrf_ios -v VPN-ID="+fromrouter.configuration[vpn]['vpn_id']+" -v VRF-DESCRIPTION='' -j " + options.torouter
 
