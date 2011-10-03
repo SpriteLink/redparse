@@ -29,7 +29,21 @@ class Config:
                 else:
                     self.vrfs[''] = vrf
 
-
+	
+	def _cidr_to_netmask(bits):
+		""" Convert CIDR bits to netmask 
+		"""
+		netmask = ''
+		for i in range(4):
+			if i:
+				netmask += '.'
+				if bits >= 8:
+					netmask += '%d' % (2**8-1)
+					bits -= 8
+				else:
+					netmask += '%d' % (256-2**(8-bits))
+					bits = 0
+		return netmask
 
 
     def cmp_vrfs(self, other):
@@ -43,6 +57,44 @@ class Config:
         return my_vrfs - other_vrfs, other_vrfs - my_vrfs
 
 
+	def output_config(self, intf):
+		""" Output config 
+		"""
+
+		"""
+		Output should look like this
+		interface tenGigabitEthernet 9/2.2000
+		 ecapsulation dot1q 2000
+		 ip vrf forwarding 1257:1700
+		 ip address 130.244.105.0 255.255.255.254
+		 service-policy QOS-VPN-SHAPE input
+		 service-policy QOS-VPN-SHAPE output
+		 no ip redirects
+		 ip helper-address 1.1.1.1
+
+		ip route vrf 1257:1700 10.10.10 255.255.255.0 9/2.2000 130.244.105.1
+
+		"""
+		self.output_int = int
+
+		for vrf_name in self.config:
+			vrf = self.config[vrf_name]
+			if 'vpn_id' in vrf:
+				current_vrf_id = vrf['vpn_id']
+			if 'interface' in vrf:
+				if 'binded' in vrf['interface']:
+					intf = vrf['interface']
+					print "interface tenGigabitEthernet", self.output_int, ".",intf['vlan_id']
+					print " encapsulation dot1q", intf['vlan_id']
+					if current_vrf_id:
+						print " ip vrf forwarding 1257:",current_vrf_id
+					print " ip address",  
+
+					
+
+
+
+		
 
 
 class ParseRedback(object):
@@ -429,8 +481,6 @@ if __name__ == '__main__':
     parser.add_option("-f", "--from-router", dest = "from_router", help = "From Router")
     parser.add_option("-t", "--to-router", dest = "to_router", help = "To Router")
     parser.add_option("-i", "--interface", dest = "to_int", help = "Interface on destination router")
-    parser.add_option("--list-context", action = "store_true",  dest = "listcontext", help = "List context missing on destination Router")
-    parser.add_option("--list-vlan", action = "store_true",  dest = "listvlan", help = "List all vlan and ")
     parser.add_option("-o", "--output-file", dest = "output-file", help = "Output conf to file")
 
     ##
@@ -498,14 +548,6 @@ if __name__ == '__main__':
         print "Colliding VLANs:", res
 
 
-    if options.listcontext:
-        fromrouter.listContext() 
-    
-    #fromrouter.printConfig()
-    #torouter.printConfig()
-
-    #compare config
-    
     def compareVRF(): 
         #compare vrf
         print ""
