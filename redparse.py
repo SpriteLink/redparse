@@ -44,6 +44,7 @@ class Config:
 
 
 
+
 class ParseRedback(object):
     """
     """
@@ -459,11 +460,16 @@ if __name__ == '__main__':
     if options.cmp_vrfs:
         ignore = set(ignore_vrfs)
         l1, l2 = from_cfg.cmp_vrfs(to_cfg)
+        ignored = l1.intersection(ignore)
         print "We need to create the following VRFS in", options.to_router
         # ignore the "global" vrf, which is stored as ''
         l1 = l1 - set(('',))
         l1 = l1 - ignore
         for vrf in sorted(l1, key=int):
+            print " ", vrf
+
+        print "The following VRFs were ignored and need to be handled manually:"
+        for vrf in ignored:
             print " ", vrf
 
     # check for VLAN collisions
