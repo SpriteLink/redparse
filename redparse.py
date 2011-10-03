@@ -4,6 +4,35 @@ import sys
 import re
 
 
+class Config:
+    def __init__(self, config):
+        self.config = config
+        self.vrfs = {}
+        self._parse_shite()
+
+    def _parse_shite(self):
+        for vrf_name in self.config:
+            vrf = self.config[vrf_name]
+            if type(vrf) == dict and 'vpn_id' in vrf and vrf['vpn_id'] is not None:
+                self.vrfs[vrf['vpn_id']] = {}
+            else:
+                self.vrfs[''] = {}
+
+
+
+
+    def cmp_vrfs(self, other):
+        """ Compare this Config with another one and return differing VRF IDs
+
+            First list returned is vrfs unique to this Config while the second
+            returned list contains vrfs unique to the other config
+        """
+        my_vrfs = set(self.vrfs)
+        other_vrfs = set(other.vrfs)
+        return my_vrfs - other_vrfs, other_vrfs - my_vrfs
+
+
+
 class ParseRedback(object):
     """
     """
@@ -21,28 +50,29 @@ class ParseRedback(object):
     def _getContextConfig(self, cfg):
         """ Parse config and store contextconfig and RD
         """
-        self.fh = open(cfg,"r")
+        self.fh = open(cfg, "r")
         self.config = self.fh.readlines()
         self.current_context = None
         self.text = None
         
         for line in self.config:
-            m = re.match('^context\s(?P<context_name>[a-zA-Z0-9_:\-&\/]+)?(\svpn-rd\s.*:(?P<vpn_rd>[0-9]+))?', line, re.VERBOSE)
+            m = re.match('context\s(?P<context_name>[^ ]+)(\svpn-rd\s.*:(?P<vpn_id>[0-9]+))?', line)
             n = re.match('.*(^!\s\*\*\sEnd\sContext\s\*\*)', line, re.VERBOSE)
-            if (n is not None):
+            if n is not None:
                 self.configuration[self.current_context]['raw_config'] = self.text
-            elif (m is not None):
-                if(self.current_context):
+            elif m is not None:
+                if self.current_context:
                     self.configuration[self.current_context]['raw_config'] = self.text
-                self.current_context = m.group('context_name')
-                if self.current_context is None:
-                    print "ERRORRR context fuckedup ->", self.line
-                    exit()
+
+                if m.group('context_name') is None:
+                    raise InputError("context fuckedup? " + str(self.line))
+
+                self.current_context = m.group('context_name').strip()
                 self.configuration[self.current_context] = {}
-                self.configuration[self.current_context]['vpn_rd'] = m.group('vpn_rd') 
+                self.configuration[self.current_context]['vpn_id'] = m.group('vpn_id')
                 self.text = line 
-            elif not re.match("^!", line, re.VERBOSE):
-                if(self.current_context):
+            elif not re.match("^!", line):
+                if self.current_context:
                     self.text += line
 
     
@@ -100,7 +130,7 @@ class ParseRedback(object):
                     self.parent_intf = None
                 
                 #static routing
-                if re.match('\sip\sroute', line, re.VERBOSE):
+                if re.match(' ip route', line):
                     self.route_line = line.split()
                     #first route
                     if not 'static' in  self.configuration[self.current_context]['routing']:
@@ -117,7 +147,7 @@ class ParseRedback(object):
                         #nexthop is a interface?
                         static[self.route_line[2]]['oif'] = self.route_line[3]
                     else:
-                        #Look if nexthop is in our connected dict
+                        # Look if nexthop is in our connected dict
                         rnode = self.configuration[self.current_context]['routing']['connected'].search_best(self.route_line[3])
                         if rnode is not None:
                             parent_intf = rnode.data['parent_intf']
@@ -129,7 +159,7 @@ class ParseRedback(object):
                             #print "ROUTE NOT IN CONNECTED:", self.route_line[2], self.route_line[3]
                 
                 #DHCP relay
-                if re.match('\sdhcp\srelay\sserver', line, re.VERBOSE):
+                if re.match(' dhcp relay server', line):
                     self.dhcp_line = line.split()
                     if not 'dhcp_relay' in self.configuration[self.current_context]:
                         self.configuration[self.current_context]['dhcp_relay'] = {}
@@ -137,21 +167,22 @@ class ParseRedback(object):
                     
                     dhcp_relay['address'] = [self.dhcp_line[3]]
                 #BGP
-                if re.match('\s\sneighbor', line, re.VERBOSE):
+                if re.match('\s\sneighbor', line):
                     self.bgp_peer = line.split()
                     if self.bgp_peer[2] == 'external':
                         self.bgp_peer_address = self.bgp_peer[1]
                 elif (self.bgp_peer_address) and (len(line) - len(line.lstrip()) > 2):
-                    ##TODO: 
+                    # TODO: fix this shite! :)
                     pass
                 else:
                     self.bgp_peer_address = None
 
 
+
     def parsePort(self, cfg):
         """ Parse physical ports and get bw and bind status
         """
-        self.fh = open(cfg,"r")
+        self.fh = open(cfg, "r")
         self.config = self.fh.readlines()
         self.current_port = None
         self.current_slot = None
@@ -161,27 +192,31 @@ class ParseRedback(object):
             if b is not None:
                 self.current_port = b.group('slot')
                 self.current_slot = b.group('port')
-            elif (self.current_port) and (self.current_slot) and (len(line) - len(line.lstrip()) > 0):
-                if re.match('\sdot1q', line, re.VERBOSE):
-                    #pvc
+            elif self.current_port and self.current_slot and len(line) - len(line.lstrip()) > 0:
+                if re.match('\sdot1q', line):
+                    # pvc
                     self.current_intf = None
                     self.current_context = None 
-                elif re.match('\s\sbind\sinterface', line, re.VERBOSE):
-                    #bind interface
+                elif re.match('\s\sbind\sinterface', line):
+                    # bind interface
                     self.current_intf = line.split()[2]
                     self.current_context = line.split()[3]
                     self.configuration[self.current_context]['interface'][self.current_intf]['binded'] = True
-                elif re.match('\s\sl2vpn', line, re.VERBOSE):
-                    #l2vpn eompls
+                elif re.match('\s\sl2vpn', line):
+                    # l2vpn eompls
+                    # TODO: handle l2vpn, ie EoMPLS
                     #print line.split()
                     pass
-                elif re.match('\s\sqos', line, re.VERBOSE):
-                    #qos policys
-                    b = re.findall(r'([0-9]?[0-9]?[0-9])',line.split()[3], re.VERBOSE)
-                    if (len(b) > 0) and (self.current_intf):
-                        self.configuration[self.current_context]['interface'][self.current_intf]['bw'] = b[0]
+                elif re.match('\s{2}qos policy (policing|queueing)', line):
+                    # qos policys, examples:
+                    # qos policy queuing qosout-100Mbps-Real-time
+                    # qos policy policing 10mbps-voice-in-mittmedia-service acl-counters
+                    b = re.search(r'([0-9]+)', line.split()[3])
+                    if b is not None and self.current_intf:
+                        self.configuration[self.current_context]['interface'][self.current_intf]['bw'] = b.group(0)
+
             else:
-                ##print "port end"
+                # end of port configuration
                 self.current_port = None
                 self.current_port = None
     
@@ -230,8 +265,8 @@ class ParseRedback(object):
         """ print our contexts and rd
         """
         for context in self.configuration:
-            if 'vpn_rd' in self.configuration[context]:
-                print "%s = %s " % (context, self.configuration[context]['vpn_rd'])
+            if 'vpn_id' in self.configuration[context]:
+                print "%s = %s " % (context, self.configuration[context]['vpn_id'])
             else:
                 print "%s " % (context)
     
@@ -247,11 +282,11 @@ class ParseRedback(object):
                     if 'dhcp_relay' in interface and  'pri_ipv4' in interface:
                         #print self.configuration[context]['interface'][int]
                         if 'vlan_id' in interface:
-                            self.all_context.append(self.configuration[context]['vpn_rd'])
+                            self.all_context.append(self.configuration[context]['vpn_id'])
                             print "int Te9/1." + interface['vlan_id']
                             print "encap dot1q pvc", interface['vlan_id']
                             print "description", interface['description']
-                            print "ip vrf forwarding 1257:" + self.configuration[context]['vpn_rd'].strip()
+                            print "ip vrf forwarding 1257:" + self.configuration[context]['vpn_id'].strip()
                             print "ip address", interface[int]['pri_ipv4']
                             if 'sec_ipv4' in interface:
                                 print "ip address " + interface['sec_ipv4'][0] +" secondary"
@@ -321,7 +356,7 @@ class ParseCisco():
 
         for line in self.config:
             #ip vrf 1257:1274                                    
-            if re.match('ip\svrf\s[0-9]+:[0-9]+', line, re.VERBOSE):
+            if re.match('ip\svrf\s[0-9]+:[0-9]+', line):
                 self.vrf = line.split()[2]
                 self.configuration[self.vrf] = None        
 
@@ -348,6 +383,7 @@ if __name__ == '__main__':
     import optparse
     parser = optparse.OptionParser()
     ##
+    parser.add_option("--cmp-vrfs", action = "store_true", help = "Compare VRFs")
     parser.add_option("-f", "--from-router", dest = "from_router", help = "From Router")
     parser.add_option("-t", "--to-router", dest = "to_router", help = "To Router")
     parser.add_option("-i", "--interface", dest = "to_int", help = "Interface on destination router")
@@ -374,6 +410,19 @@ if __name__ == '__main__':
     
     from_router = ParseRedback(configFile)
     to_router = ParseCisco(destConfigFile)
+
+    from_cfg = Config(from_router.configuration)
+    to_cfg = Config(to_router.configuration)
+
+    if options.cmp_vrfs:
+        l1, l2 = from_cfg.cmp_vrfs(to_cfg)
+        print "VRFs unique to ", options.from_router
+        for vrf in sorted(l1, key=int):
+            print "  ", vrf
+
+        print "VRFs unique to ", options.to_router
+        for vrf in l2:
+            print "  ", vrf
    
 
     if options.listcontext:
@@ -398,13 +447,13 @@ if __name__ == '__main__':
         print "Checking for missing vrf in " + options.torouter
         print ""
         for vpn in fromrouter.configuration:
-            if (fromrouter.configuration[vpn]['vpn_rd'] is not None) and (len(fromrouter.configuration[vpn]['interface']) > 0):
-                rd = '1257:' + fromrouter.configuration[vpn]['vpn_rd']
+            if (fromrouter.configuration[vpn]['vpn_id'] is not None) and (len(fromrouter.configuration[vpn]['interface']) > 0):
+                rd = '1257:' + fromrouter.configuration[vpn]['vpn_id']
                 if not rd in torouter.configuration:
-                    if (fromrouter.configuration[vpn]['vpn_rd'] in specialVRF) or (len(fromrouter.configuration[vpn]['vpn_rd']) <> 4): 
-                        print '1257:'+fromrouter.configuration[vpn]['vpn_rd'] + " SPECIAL VRF, conf manually"
+                    if (fromrouter.configuration[vpn]['vpn_id'] in specialVRF) or (len(fromrouter.configuration[vpn]['vpn_id']) <> 4): 
+                        print '1257:'+fromrouter.configuration[vpn]['vpn_id'] + " SPECIAL VRF, conf manually"
                     else:
-                        print "cpush -a --ios-file bgp-vpn-vrf_ios -v VPN-ID="+fromrouter.configuration[vpn]['vpn_rd']+" -v VRF-DESCRIPTION='' -j " + options.torouter
+                        print "cpush -a --ios-file bgp-vpn-vrf_ios -v VPN-ID="+fromrouter.configuration[vpn]['vpn_id']+" -v VRF-DESCRIPTION='' -j " + options.torouter
 
 
 
