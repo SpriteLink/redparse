@@ -20,6 +20,7 @@ class Config:
         self.vrfs = {}
         self._parse_shite()
 
+
     def _parse_shite(self):
         for vrf_name in self.config:
             vrf = self.config[vrf_name]
@@ -29,21 +30,22 @@ class Config:
                 else:
                     self.vrfs[''] = vrf
 
-	
-	def _cidr_to_netmask(bits):
-		""" Convert CIDR bits to netmask 
-		"""
-		netmask = ''
-		for i in range(4):
-			if i:
-				netmask += '.'
-				if bits >= 8:
-					netmask += '%d' % (2**8-1)
-					bits -= 8
-				else:
-					netmask += '%d' % (256-2**(8-bits))
-					bits = 0
-		return netmask
+
+
+    def _cidr_to_netmask(self, bits):
+        """ Convert CIDR bits to netmask 
+        """
+        netmask = ''
+        for i in range(4):
+            if i:
+                netmask += '.'
+            if bits >= 8:
+                netmask += '%d' % (2**8-1)
+                bits -= 8
+            else:
+                netmask += '%d' % (256-2**(8-bits))
+                bits = 0
+        return netmask
 
 
     def cmp_vrfs(self, other):
@@ -57,40 +59,59 @@ class Config:
         return my_vrfs - other_vrfs, other_vrfs - my_vrfs
 
 
-	def output_config(self, intf):
-		""" Output config 
-		"""
-
-		"""
+    def output_config(self, intf):
+        """ Output config 
 		Output should look like this
 		interface tenGigabitEthernet 9/2.2000
 		 ecapsulation dot1q 2000
 		 ip vrf forwarding 1257:1700
 		 ip address 130.244.105.0 255.255.255.254
-		 service-policy QOS-VPN-SHAPE input
-		 service-policy QOS-VPN-SHAPE output
+		 service-policy QOS-VPN-SHAPE input  [external script?]
+		 service-policy QOS-VPN-SHAPE output [external script]
 		 no ip redirects
+         no ip proxy-arp
 		 ip helper-address 1.1.1.1
 
 		ip route vrf 1257:1700 10.10.10 255.255.255.0 9/2.2000 130.244.105.1
 
-		"""
-		self.output_int = int
+        """
+        self.output_int = intf
+        self.output = []
+        for vrf_name in self.config:
+            vrf = self.config[vrf_name]
+            self.output = []
+            if 'vpn_id' in vrf:
+			    current_vrf_id = vrf['vpn_id']
+            if 'interface' in vrf:
+                for port in vrf['interface']:
+                    intf = vrf['interface'][port]
+                    if 'binded' in intf and 'pri_ipv4' in intf:
+                        a = "interface tenGigabitEthernet",self.output_int +"." + intf['vlan_id']
+                        self.output.append("interface tenGigabitEthernet " + self.output_int + "." + intf['vlan_id'])
+                        self.output.append(" encapsulation dot1q " + intf['vlan_id'])
+                        
+                        if 'description' in intf:
+                            self.output.append(" description " + intf['description'])
+                        
+                        if current_vrf_id:
+                            self.output.append(" ip vrf forwarding 1257:" + current_vrf_id)
+                        
+                        self.output.append(" ip address " + intf['pri_ipv4'].split('/')[0] + " " + self._cidr_to_netmask(int(intf['pri_ipv4'].split('/')[1])))
+                        
+                        if 'sec_ipv4' in intf:
+                            print intf
+                            for sec_adr in intf['sec_ipv4']:
+                                self.output.append(" ip address " + sec_adr.split('/')[0] + " " + self._cidr_to_netmask(int(sec_adr.split('/')[1])) + " secondary")
+                        
+                        if 'dhcp_relay' in vrf:
+                            for adr in vrf['dhcp_relay']['address']:
+                                self.output.append(" ip-helper address " + adr)
+                        
+            print ""
+            for i in self.output:
+                print i
+			for
 
-		for vrf_name in self.config:
-			vrf = self.config[vrf_name]
-			if 'vpn_id' in vrf:
-				current_vrf_id = vrf['vpn_id']
-			if 'interface' in vrf:
-				if 'binded' in vrf['interface']:
-					intf = vrf['interface']
-					print "interface tenGigabitEthernet", self.output_int, ".",intf['vlan_id']
-					print " encapsulation dot1q", intf['vlan_id']
-					if current_vrf_id:
-						print " ip vrf forwarding 1257:",current_vrf_id
-					print " ip address",  
-
-					
 
 
 
@@ -104,7 +125,47 @@ class ParseRedback(object):
 
 
         self.configuration = {}
-        
+        """
+        self.configuration
+            skanet-in-public
+                vpn-id = 1004
+                raw_config = "confocnfongconf"
+                interfaces
+                    ge2-2.1212
+                        vlan = 1212
+                        pri_ipv4 = 1.1.1.1/24
+                        sec_ipv4 = [2.2.2.2/24]
+                        description = "IP-PORT232312,fsdfsd, test"
+                        dhcp_relay = true
+                        bw = 10
+                        binded = True
+                    ge2-2.1414
+                        vlan = 1414
+                        pri_ipv4 = 4.4.4.4/24
+                        sec_iv4 = [43.2.2.2/24, 23.23.23.23/25]
+                        description = "IP-PORT23232,2222 Goteborg"
+                routing
+                    connected (haxx ip type)
+                        1.1.1.1/24  = ge2-2.1212
+                        2.2.2.2/24  = ge2-2.1212
+                        4.4.4.4/24  = ge2-2.1414
+                        43.2.2.2/24 = ge2-2.1414
+                        23.23.23.23/25  = ge2-2.1414
+                    static
+                        0.0.0.0/0
+                            oif = ge1/1
+                            nhop = 10.10.101.1
+                        10.2.3.3/24
+                            oif = None
+                            nhop = 1.1.1.1
+                    bgp
+
+            dhcp_relay
+                address = [1.1.1.1,2.2.2.2]
+
+        """
+
+
         self.configfile = cfg       
         self._getContextConfig(self.configfile) 
         self._parseContextConfig()
@@ -161,7 +222,7 @@ class ParseRedback(object):
             #find interfaces and attributes for them
             for line in self.config:
                 #interface
-                if re.match('\sinterface', line, re.VERBOSE):
+                if re.match('\sinterface .*GE', line, re.VERBOSE):
                     if re.match('.*GE', line.split()[1]):
                         self.parent_intf = line.split()[1]
                         interface[self.parent_intf] = {}
@@ -288,42 +349,6 @@ class ParseRedback(object):
                 self.current_context = None 
    
 
-    
-    def printConfig(self): 
-        for key in self.configuration:
-            print ""
-            print "Context: ", key
-            if 'interface' in self.configuration[key]:
-                print "interface"
-                for tt in self.configuration[key]['interface']:
-                    print "%s %s " % (tt, self.configuration[key]['interface'][tt])
-                for aa in self.configuration[key]['routing']['connected']:
-                    pass
-                    #print "connected list"
-                    #print "%s %s" % (self.configuration[key]['routing']['connected'][aa], aa)
-            if 'routing' in self.configuration[key]:
-                print "routing"
-                if 'static' in self.configuration[key]['routing']:
-                    for bb in self.configuration[key]['routing']['static']:
-                        
-                        if 'nexthop' in self.configuration[key]['routing']['static'][bb]:
-                            nhop = self.configuration[key]['routing']['static'][bb]['nexthop']
-                            if not nhop is None:
-                                rnode = self.configuration[key]['routing']['connected'].search_best(nhop)
-                                if rnode is not None:
-                                    parent_intf = rnode.data['parent_intf']
-                                    print bb + " -> " + nhop + " (" + parent_intf + ")"
-                                else:
-                                    print "ROUTE NOT IN CONNECTED:", bb, nhop
-                        else:
-                            print "DEBUG ", self.configuration[key]['routing']['static']
-
-            if 'dhcp_relay' in self.configuration[key]:
-                print "DHCP"
-                for kk in self.configuration[key]['dhcp_relay']:
-                    print self.configuration[key]['dhcp_relay'][kk]
-
-
 
     def listContext(self):
         """ print our contexts and rd
@@ -334,70 +359,6 @@ class ParseRedback(object):
             else:
                 print "%s " % (context)
     
-    def printCiscoConfig(self):
-        """ haxx for gbg80 crasch
-        """
-        self.all_context = []
-        for context in self.configuration:
-            if 'dhcp_relay' in self.configuration[context]:
-                for int in self.configuration[context]['interface']:
-                    
-                    interface = self.configuration[context]['interface'][int]
-                    if 'dhcp_relay' in interface and  'pri_ipv4' in interface:
-                        #print self.configuration[context]['interface'][int]
-                        if 'vlan_id' in interface:
-                            self.all_context.append(self.configuration[context]['vpn_id'])
-                            print "int Te9/1." + interface['vlan_id']
-                            print "encap dot1q pvc", interface['vlan_id']
-                            print "description", interface['description']
-                            print "ip vrf forwarding 1257:" + self.configuration[context]['vpn_id'].strip()
-                            print "ip address", interface[int]['pri_ipv4']
-                            if 'sec_ipv4' in interface:
-                                print "ip address " + interface['sec_ipv4'][0] +" secondary"
-                            if 'dhcp_relay' in self.configuration[context]:
-                                for adr in self.configuration[context]['dhcp_relay']['address']:
-                                    print "ip helper-address " + adr
-                            if 'routing' in self.configuration[context]:
-                                if 'static' in self.configuration[context]['routing']:
-                                    for bb in self.configuration[context]['routing']['static']:
-
-                                        if 'nexthop' in self.configuration[context]['routing']['static'][bb]:
-                                            nhop = self.configuration[context]['routing']['static'][bb]['nexthop']
-                                            if not nhop is None:
-                                                rnode = self.configuration[context]['routing']['connected'].search_best(nhop)
-                                                if rnode is not None:
-                                                    parent_intf = rnode.data['parent_intf']
-                                                    if parent_intf == self.configuration[context]['interface'][int]:
-                                                        print bb + " -> " + nhop + " (" + parent_intf + ")"
-                                                else:
-                                                    print "INVALID ROUTE:", bb, nhop
-                                        else:
-                                            pass
-                                            #print "DEBUG ", self.configuration[context]['routing']['static']
- 
-                        print ""
-        list(set(self.all_context))
-        for rd in list(set(self.all_context)):
-            print "/home/staff/fredsod0/bin/make.vpn " + rd + " gbg-pe-1"
-        print " "
-        print " "
-
-
-
-    def printGBG80(self):
-        """hax for gbg80 crash
-        """
-
-        for context in self.configuration:
-            if 'dhcp_relay' in self.configuration[context]:
-                for int in self.configuration[context]['interface']:
-                    if 'dhcp_relay' in self.configuration[context]['interface'][int] and  'pri_ipv4' in self.configuration[context]['interface'][int]:
-                        #print self.configuration[context]['interface'][int]
-                        if 'vlan_id' in self.configuration[context]['interface'][int]:
-                            print "context " + context
-                            print "no interface " + int         
-                
-
 
 
 class ParseCisco():
@@ -434,6 +395,8 @@ class ParseCisco():
                     rd = line.split()[1].strip()
                     vpn_id = line.split(':')[1].strip()
                     self.configuration[self.vrf]['vpn_id'] = vpn_id
+
+
 
     def _find_ES_ports(self):
         es_modules = {}
@@ -476,6 +439,7 @@ if __name__ == '__main__':
     import optparse
     parser = optparse.OptionParser()
     ##
+    parser.add_option("--print-conf", action = "store_true", help = "Print config")
     parser.add_option("--cmp-vrfs", action = "store_true", help = "Compare VRFs")
     parser.add_option('--check-vlan', action = "store_true", help = "Check if there are VLAN collisions on the destination router/port")
     parser.add_option("-f", "--from-router", dest = "from_router", help = "From Router")
@@ -494,10 +458,10 @@ if __name__ == '__main__':
         sys.exit(1)
 
     #from_router config
-    configFile = "/misc/tele2.net/config/all/" + options.from_router + ".tele2.net"
+    configFile = "/misc/tele2.net/config/all/" + options.from_router.lower() + ".tele2.net"
     
     if options.to_router:
-        destConfigFile = "/misc/tele2.net/config/all/" + options.to_router + ".tele2.net"
+        destConfigFile = "/misc/tele2.net/config/all/" + options.to_router.lower() + ".tele2.net"
     
     
     from_router = ParseRedback(configFile)
@@ -505,6 +469,14 @@ if __name__ == '__main__':
 
     from_cfg = Config(from_router.configuration)
     to_cfg = Config(to_router.configuration)
+
+    # Print config
+    if options.print_conf:
+        if options.to_int is None:
+            print >> sys.stderr, "Please specify the 'destination interface'"
+            sys.exit(1)
+        from_cfg.output_config(options.to_int)
+
 
     # compare VRFs to determine whether we need to add anything
     if options.cmp_vrfs:
@@ -538,7 +510,7 @@ if __name__ == '__main__':
             for if_name in vrf['interface']:
                 interface = vrf['interface'][if_name]
                 if 'binded' not in interface:
-                    next
+                    continue
                 if 'vlan_id' not in interface:
                     vlan_id = 0
                 else:
