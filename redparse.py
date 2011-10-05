@@ -78,6 +78,8 @@ class Config:
         self.output_int = intf
         self.output = []
         for vrf_name in self.config:
+            if vrf_name == 'ADSL': # Adsl nono!
+                continue
             vrf = self.config[vrf_name]
             self.output = []
             if 'vpn_id' in vrf:
@@ -86,31 +88,55 @@ class Config:
                 for port in vrf['interface']:
                     intf = vrf['interface'][port]
                     if 'binded' in intf and 'pri_ipv4' in intf:
-                        a = "interface tenGigabitEthernet",self.output_int +"." + intf['vlan_id']
-                        self.output.append("interface tenGigabitEthernet " + self.output_int + "." + intf['vlan_id'])
-                        self.output.append(" encapsulation dot1q " + intf['vlan_id'])
                         
+                        self.current_intf = "te" + self.output_int +"." + intf['vlan_id']
+                        self.output.append("interface " +self.current_intf)
+                        self.output.append(" encapsulation dot1q " + intf['vlan_id'])
                         if 'description' in intf:
                             self.output.append(" description " + intf['description'])
-                        
                         if current_vrf_id:
                             self.output.append(" ip vrf forwarding 1257:" + current_vrf_id)
-                        
                         self.output.append(" ip address " + intf['pri_ipv4'].split('/')[0] + " " + self._cidr_to_netmask(int(intf['pri_ipv4'].split('/')[1])))
-                        
                         if 'sec_ipv4' in intf:
-                            print intf
                             for sec_adr in intf['sec_ipv4']:
                                 self.output.append(" ip address " + sec_adr.split('/')[0] + " " + self._cidr_to_netmask(int(sec_adr.split('/')[1])) + " secondary")
-                        
                         if 'dhcp_relay' in vrf:
                             for adr in vrf['dhcp_relay']['address']:
                                 self.output.append(" ip-helper address " + adr)
-                        
+                        if 'routing' in vrf:
+                            # static routing
+                            if 'static' in vrf['routing']:
+                                stat = vrf['routing']['static']
+                                for net in stat:
+                                    if 'nexthop' in stat[net] :
+                                        nhop = stat[net]['nexthop']
+                                        if nhop is not None:
+                                            rnode = vrf['routing']['connected'].search_best(nhop)
+                                            if rnode is not None:
+                                                parent_intf = rnode.data['parent_intf']
+                                                if parent_intf == port:
+                                                    if current_vrf_id:
+                                                        self.output.append("ip route vrf 1257:" +current_vrf_id +" " + net.split('/')[0] + " " + self._cidr_to_netmask(int(net.split('/')[1])) +" " + self.current_intf + " " + nhop )
+                                                    else:
+                                                        self.output.append("ip route " + net.split('/')[0] + " " + self._cidr_to_netmask(int(net.split('/')[1])) +" " +  self.current_intf + " " + nhop )
+                                            else:
+                                                self.output.append("Cant find nexthop for " + net)
+                                        else:
+                                            pass
+                                            #self.output.append("---------- INVALID " + net)
+                            # BGP
+                            if 'bgp' in vrf['routing']:
+                                for peer in vrf['routing']['bgp']:
+                                    rnode = vrf['routing']['connected'].search_best(peer)
+                                    if rnode is not None:
+                                        parent_intf = rnode.data['parent_intf']
+                                        if parent_intf == port:
+                                            self.output.append("--found som bgp :) "+  peer)
+            
             print ""
+            print vrf_name
             for i in self.output:
                 print i
-			for
 
 
 
@@ -159,6 +185,11 @@ class ParseRedback(object):
                             oif = None
                             nhop = 1.1.1.1
                     bgp
+                        peer_adr = 130.244.0.1
+                        description = "IP-PORT23232, fsdfsfsd"
+                        remote-as = 65000
+                        route-map_in = secondary
+                        route-map_out = None
 
             dhcp_relay
                 address = [1.1.1.1,2.2.2.2]
@@ -207,7 +238,7 @@ class ParseRedback(object):
         """
         
         self.parent_intf = None
-        self.bgp_peer_address = None
+        self.bgp_peer = None
         import radix
         
         for self.current_context in self.configuration:
@@ -215,9 +246,9 @@ class ParseRedback(object):
             self.configuration[self.current_context]['interface'] = {}
             interface= self.configuration[self.current_context]['interface']
             self.configuration[self.current_context]['routing'] = {}
+            routing = self.configuration[self.current_context]['routing']
             self.configuration[self.current_context]['routing']['connected'] = radix.Radix()
             connected = self.configuration[self.current_context]['routing']['connected']
-        
         
             #find interfaces and attributes for them
             for line in self.config:
@@ -258,9 +289,9 @@ class ParseRedback(object):
                 if re.match(' ip route', line):
                     self.route_line = line.split()
                     #first route
-                    if not 'static' in  self.configuration[self.current_context]['routing']:
-                        self.configuration[self.current_context]['routing']['static'] = {}
-                        static  = self.configuration[self.current_context]['routing']['static'] 
+                    if not 'static' in  routing:
+                        routing['static'] = {}
+                        static  = routing['static'] 
                     
                     static[self.route_line[2]] = {}
                     
@@ -273,15 +304,13 @@ class ParseRedback(object):
                         static[self.route_line[2]]['oif'] = self.route_line[3]
                     else:
                         # Look if nexthop is in our connected dict
-                        rnode = self.configuration[self.current_context]['routing']['connected'].search_best(self.route_line[3])
+                        rnode = connected.search_best(self.route_line[3])
                         if rnode is not None:
                             parent_intf = rnode.data['parent_intf']
                             static[self.route_line[2]]['nexthop'] = self.route_line[3]
-                            #print self.route_line[2] + " -> " + self.route_line[3] + " (" + parent_intf + ")"
                         else:
                             #remove the prefix
                             static.pop(self.route_line[2])
-                            #print "ROUTE NOT IN CONNECTED:", self.route_line[2], self.route_line[3]
                 
                 #DHCP relay
                 if re.match(' dhcp relay server', line):
@@ -292,17 +321,30 @@ class ParseRedback(object):
                     
                     dhcp_relay['address'] = [self.dhcp_line[3]]
                 #BGP
-                if re.match('\s\sneighbor', line):
-                    self.bgp_peer = line.split()
-                    if self.bgp_peer[2] == 'external':
-                        self.bgp_peer_address = self.bgp_peer[1]
-                elif (self.bgp_peer_address) and (len(line) - len(line.lstrip()) > 2):
+                if re.match('  neighbor', line):
+                    if not 'bgp' in routing:
+                        routing['bgp'] = {}
+                    self.bgp_peer = line.split()[1]
+                    routing['bgp'][self.bgp_peer] = {}
+                    peer = routing['bgp'][self.bgp_peer]
+                elif (self.bgp_peer) and (len(line) - len(line.lstrip()) > 2):
                     # TODO: fix this shite! :)
-                    pass
+                    if re.match(' {4,5}remote-as', line):
+                        peer['remote-as'] = line.split()[1]
+                    if re.match('    description', line):
+                        peer['description'] = line.lstrip(' description')
+                    if re.match('      route-map', line):
+                        if line.split()[2] == 'in':
+                            #route-map in
+                            peer['route-map_in'] = line.split()[1]
+                        elif line.split()[2] == 'out':
+                            #route-map out
+                            peer['route-map_out'] = line.split()[1]
+
                 else:
-                    self.bgp_peer_address = None
-
-
+                    self.bgp_peer = None
+     
+    
 
     def parsePort(self, cfg):
         """ Parse physical ports and get bw and bind status
