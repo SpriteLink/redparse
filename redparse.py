@@ -10,6 +10,7 @@ ignore_vrfs = {
         '250': 't2v-ems',
         '504': 'sipnet',
         '532': 'sipnet',
+        '1468': 't2v',
         '10001': 'sipnet'
         }
 
@@ -59,6 +60,7 @@ class Config:
         return my_vrfs - other_vrfs, other_vrfs - my_vrfs
 
 
+
     def output_config(self, intf):
         """ Output config 
 		Output should look like this
@@ -74,21 +76,31 @@ class Config:
 
 		ip route vrf 1257:1700 10.10.10 255.255.255.0 9/2.2000 130.244.105.1
 
+        context local
+        no interface GE2-2.1500
+        no ip route 1.1.1.1/24 1.1.1.1
+
         """
         self.output_int = intf
         self.output = []
+        self.remove_output = []
         for vrf_name in self.config:
             if vrf_name == 'ADSL': # Adsl nono!
                 continue
             vrf = self.config[vrf_name]
             self.output = []
+            self.remove_output = []
             if 'vpn_id' in vrf:
 			    current_vrf_id = vrf['vpn_id']
             if 'interface' in vrf:
+                self.remove_output.append("context " + vrf_name)
                 for port in vrf['interface']:
                     intf = vrf['interface'][port]
                     if 'binded' in intf and 'pri_ipv4' in intf:
-                        
+                        self.output.append("\n") 
+                        #delete interface
+                        self.remove_output.append("no interface " + port)
+                        #new interface
                         self.current_intf = "te" + self.output_int +"." + intf['vlan_id']
                         self.output.append("interface " +self.current_intf)
                         self.output.append(" encapsulation dot1q " + intf['vlan_id'])
@@ -115,6 +127,9 @@ class Config:
                                             if rnode is not None:
                                                 parent_intf = rnode.data['parent_intf']
                                                 if parent_intf == port:
+                                                    #remove routing
+                                                    self.remove_output.append("no ip route " + net + " " + nhop)
+                                                    #new routing
                                                     if current_vrf_id:
                                                         self.output.append("ip route vrf 1257:" +current_vrf_id +" " + net.split('/')[0] + " " + self._cidr_to_netmask(int(net.split('/')[1])) +" " + self.current_intf + " " + nhop )
                                                     else:
@@ -126,15 +141,43 @@ class Config:
                                             #self.output.append("---------- INVALID " + net)
                             # BGP
                             if 'bgp' in vrf['routing']:
-                                for peer in vrf['routing']['bgp']:
+                                bgp = vrf['routing']['bgp']
+                                for peer in bgp:
                                     rnode = vrf['routing']['connected'].search_best(peer)
                                     if rnode is not None:
                                         parent_intf = rnode.data['parent_intf']
                                         if parent_intf == port:
-                                            self.output.append("--found som bgp :) "+  peer)
-            
+                                            self.output.append("\n!BGP\n")
+                                            if current_vrf_id:
+                                                self.output.append("router bgp 1257")
+                                                self.output.append("address-family ipv4 vrf 1257:" + current_vrf_id )
+                                                self.output.append("neighbor "+  peer + " remote-as " + bgp[peer]['remote-as'])
+                                                self.output.append("neighbor "+  peer + " description " + bgp[peer]['description'])
+                                                self.output.append("neighbor "+  peer + " timers 3 9")
+                                                self.output.append("neighbor "+  peer + " as-override ")
+                                                self.output.append("neighbor "+  peer + " activate")
+                                                if 'route-map_in' in bgp[peer]:
+                                                    self.output.append("neighbor "+  peer + " route-map " + bgp[peer]['route-map_in'] + " in")
+                                                if 'route-map_out' in bgp[peer]:
+                                                    self.output.append("neighbor "+  peer + " route-map " + bgp[peer]['route-map_out'] + " out")
+                                            else:
+                                                self.output.append("router bgp 1257")
+                                                self.output.append("neighbor "+  peer + " remote-as " + bgp[peer]['remote-as'])
+                                                self.output.append("neighbor "+  peer + " description " + bgp[peer]['description'])
+                                                self.output.append("neighbor "+  peer + " timers 3 9")
+                                                self.output.append("address-family ipv4 " )
+                                                self.output.append("neighbor "+  peer + " default-originate route-map IPV4-CONDITIONAL-DEFAULT")
+                                                self.output.append("neighbor "+  peer + " remote-private-as")
+                                                self.output.append("neighbor "+  peer + "  activate")
+                                                if 'route-map_in' in bgp[peer]:
+                                                    self.output.append("neighbor "+  peer + " route-map " + bgp[peer]['route-map_in'] + " in")
+                                                if 'route-map_out' in bgp[peer]:
+                                                    self.output.append("neighbor "+  peer + " route-map " + bgp[peer]['route-map_out'] + " out")
             print ""
-            print vrf_name
+            print "!",vrf_name
+            for a in self.remove_output:
+                print a
+            print "!"
             for i in self.output:
                 print i
 
@@ -147,7 +190,7 @@ class Config:
 class ParseRedback(object):
     """
     """
-    def __init__(self, cfg):
+    def __init__(self, cfg, intf=None):
 
 
         self.configuration = {}
@@ -185,11 +228,11 @@ class ParseRedback(object):
                             oif = None
                             nhop = 1.1.1.1
                     bgp
-                        peer_adr = 130.244.0.1
-                        description = "IP-PORT23232, fsdfsfsd"
-                        remote-as = 65000
-                        route-map_in = secondary
-                        route-map_out = None
+                        130.244.0.1
+                            description = "IP-PORT23232, fsdfsfsd"
+                            remote-as = 65000
+                            route-map_in = secondary
+                            route-map_out = None
 
             dhcp_relay
                 address = [1.1.1.1,2.2.2.2]
@@ -199,7 +242,7 @@ class ParseRedback(object):
 
         self.configfile = cfg       
         self._getContextConfig(self.configfile) 
-        self._parseContextConfig()
+        self._parseContextConfig(intf)
         self.parsePort(self.configfile)
     
     
@@ -233,14 +276,19 @@ class ParseRedback(object):
 
     
 
-    def _parseContextConfig(self):
+    def _parseContextConfig(self, intf = None):
         """ Parse config and find useful stuff
         """
         
         self.parent_intf = None
         self.bgp_peer = None
+        self.intf = intf
         import radix
-        
+        if self.intf is None:
+            int_regex = 'interface .*GE'
+        else:
+            int_regex = ' interface.*GE' + intf
+
         for self.current_context in self.configuration:
             self.config = self.configuration[self.current_context]['raw_config'].split('\n')
             self.configuration[self.current_context]['interface'] = {}
@@ -253,7 +301,7 @@ class ParseRedback(object):
             #find interfaces and attributes for them
             for line in self.config:
                 #interface
-                if re.match('\sinterface .*GE', line, re.VERBOSE):
+                if re.match(int_regex, line):
                     if re.match('.*GE', line.split()[1]):
                         self.parent_intf = line.split()[1]
                         interface[self.parent_intf] = {}
@@ -292,7 +340,6 @@ class ParseRedback(object):
                     if not 'static' in  routing:
                         routing['static'] = {}
                         static  = routing['static'] 
-                    
                     static[self.route_line[2]] = {}
                     
                     if self.route_line[3] == "context":
@@ -318,7 +365,6 @@ class ParseRedback(object):
                     if not 'dhcp_relay' in self.configuration[self.current_context]:
                         self.configuration[self.current_context]['dhcp_relay'] = {}
                         dhcp_relay = self.configuration[self.current_context]['dhcp_relay']
-                    
                     dhcp_relay['address'] = [self.dhcp_line[3]]
                 #BGP
                 if re.match('  neighbor', line):
@@ -333,6 +379,10 @@ class ParseRedback(object):
                         peer['remote-as'] = line.split()[1]
                     if re.match('    description', line):
                         peer['description'] = line.lstrip(' description')
+                    if re.match('    update-source', line):
+                        peer['update-source'] = line.split()[1]
+                    if re.match('      default-originate', line):
+                        peer['default-originate'] = True
                     if re.match('      route-map', line):
                         if line.split()[2] == 'in':
                             #route-map in
@@ -340,7 +390,6 @@ class ParseRedback(object):
                         elif line.split()[2] == 'out':
                             #route-map out
                             peer['route-map_out'] = line.split()[1]
-
                 else:
                     self.bgp_peer = None
      
@@ -368,7 +417,13 @@ class ParseRedback(object):
                     # bind interface
                     self.current_intf = line.split()[2]
                     self.current_context = line.split()[3]
-                    self.configuration[self.current_context]['interface'][self.current_intf]['binded'] = True
+                    if self.current_intf in self.configuration[self.current_context]['interface']:
+                        interface = self.configuration[self.current_context]['interface'][self.current_intf]
+                        interface['binded'] = True
+                    else:
+                        self.current_intf = None
+                        self.current_context = None
+                        continue
                 elif re.match('\s\sl2vpn', line):
                     # l2vpn eompls
                     # TODO: handle l2vpn, ie EoMPLS
@@ -380,7 +435,7 @@ class ParseRedback(object):
                     # qos policy policing 10mbps-voice-in-mittmedia-service acl-counters
                     b = re.search(r'([0-9]+)', line.split()[3])
                     if b is not None and self.current_intf:
-                        self.configuration[self.current_context]['interface'][self.current_intf]['bw'] = b.group(0)
+                        interface['bw'] = b.group(0)
 
             else:
                 # end of port configuration
@@ -487,6 +542,7 @@ if __name__ == '__main__':
     parser.add_option("-f", "--from-router", dest = "from_router", help = "From Router")
     parser.add_option("-t", "--to-router", dest = "to_router", help = "To Router")
     parser.add_option("-i", "--interface", dest = "to_int", help = "Interface on destination router")
+    parser.add_option("-r", "--from-interface", dest = "from_int", help = "Interface on 'from'-router")
     parser.add_option("-o", "--output-file", dest = "output-file", help = "Output conf to file")
 
     ##
@@ -505,8 +561,10 @@ if __name__ == '__main__':
     if options.to_router:
         destConfigFile = "/misc/tele2.net/config/all/" + options.to_router.lower() + ".tele2.net"
     
-    
-    from_router = ParseRedback(configFile)
+    if options.from_int:  
+        from_router = ParseRedback(configFile, options.from_int)
+    else:
+        from_router = ParseRedback(configFile)
     to_router = ParseCisco(destConfigFile)
 
     from_cfg = Config(from_router.configuration)
@@ -560,21 +618,4 @@ if __name__ == '__main__':
                 from_vlans[vlan_id] = interface
         res = set(from_vlans).intersection(set(to_router.es_ports[options.to_int]))
         print "Colliding VLANs:", res
-
-
-    def compareVRF(): 
-        #compare vrf
-        print ""
-        print "Checking for missing vrf in " + options.torouter
-        print ""
-        for vpn in fromrouter.configuration:
-            if (fromrouter.configuration[vpn]['vpn_id'] is not None) and (len(fromrouter.configuration[vpn]['interface']) > 0):
-                rd = '1257:' + fromrouter.configuration[vpn]['vpn_id']
-                if not rd in torouter.configuration:
-                    if (fromrouter.configuration[vpn]['vpn_id'] in ignore_vrf) or (len(fromrouter.configuration[vpn]['vpn_id']) <> 4): 
-                        print '1257:'+fromrouter.configuration[vpn]['vpn_id'] + " ignore_vrf VRF, conf manually"
-                    else:
-                        print "cpush -a --ios-file bgp-vpn-vrf_ios -v VPN-ID="+fromrouter.configuration[vpn]['vpn_id']+" -v VRF-DESCRIPTION='' -j " + options.torouter
-
-
 
