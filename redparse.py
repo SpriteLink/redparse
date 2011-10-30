@@ -61,7 +61,7 @@ class Config:
 
 
 
-    def output_config(self, intf):
+    def output_config(self, to_intf, from_intf = None):
         """ Output config 
 		Output should look like this
 		interface tenGigabitEthernet 9/2.2000
@@ -81,9 +81,13 @@ class Config:
         no ip route 1.1.1.1/24 1.1.1.1
 
         """
-        self.output_int = intf
+        self.output_int = to_intf
         self.output = []
         self.remove_output = []
+        if from_intf is None:
+            int_regex = '.*GE'
+        else:
+            int_regex = '.*GE' + from_intf
         for vrf_name in self.config:
             if vrf_name == 'ADSL': # Adsl nono!
                 continue
@@ -96,7 +100,7 @@ class Config:
                 self.remove_output.append("context " + vrf_name)
                 for port in vrf['interface']:
                     intf = vrf['interface'][port]
-                    if 'binded' in intf and 'pri_ipv4' in intf:
+                    if 'binded' in intf and 'pri_ipv4' in intf and re.match(int_regex, port):
                         self.output.append("\n") 
                         #delete interface
                         self.remove_output.append("no interface " + port)
@@ -148,38 +152,35 @@ class Config:
                                         parent_intf = rnode.data['parent_intf']
                                         if parent_intf == port:
                                             self.output.append("\n!BGP\n")
+                                            self.output.append("router bgp 1257")
                                             if current_vrf_id:
-                                                self.output.append("router bgp 1257")
                                                 self.output.append("address-family ipv4 vrf 1257:" + current_vrf_id )
                                                 self.output.append("neighbor "+  peer + " remote-as " + bgp[peer]['remote-as'])
-                                                self.output.append("neighbor "+  peer + " description " + bgp[peer]['description'])
+                                                if 'description' in bgp[peer]:
+                                                    self.output.append("neighbor "+  peer + " description " + bgp[peer]['description'])
                                                 self.output.append("neighbor "+  peer + " timers 3 9")
                                                 self.output.append("neighbor "+  peer + " as-override ")
-                                                self.output.append("neighbor "+  peer + " activate")
-                                                if 'route-map_in' in bgp[peer]:
-                                                    self.output.append("neighbor "+  peer + " route-map " + bgp[peer]['route-map_in'] + " in")
-                                                if 'route-map_out' in bgp[peer]:
-                                                    self.output.append("neighbor "+  peer + " route-map " + bgp[peer]['route-map_out'] + " out")
                                             else:
-                                                self.output.append("router bgp 1257")
                                                 self.output.append("neighbor "+  peer + " remote-as " + bgp[peer]['remote-as'])
                                                 self.output.append("neighbor "+  peer + " description " + bgp[peer]['description'])
                                                 self.output.append("neighbor "+  peer + " timers 3 9")
                                                 self.output.append("address-family ipv4 " )
                                                 self.output.append("neighbor "+  peer + " default-originate route-map IPV4-CONDITIONAL-DEFAULT")
                                                 self.output.append("neighbor "+  peer + " remote-private-as")
-                                                self.output.append("neighbor "+  peer + "  activate")
-                                                if 'route-map_in' in bgp[peer]:
-                                                    self.output.append("neighbor "+  peer + " route-map " + bgp[peer]['route-map_in'] + " in")
-                                                if 'route-map_out' in bgp[peer]:
-                                                    self.output.append("neighbor "+  peer + " route-map " + bgp[peer]['route-map_out'] + " out")
-            print ""
-            print "!",vrf_name
-            for a in self.remove_output:
-                print a
-            print "!"
-            for i in self.output:
-                print i
+                                            
+                                            self.output.append("neighbor "+  peer + "  activate")
+                                            if 'route-map_in' in bgp[peer]:
+                                                self.output.append("neighbor "+  peer + " route-map " + bgp[peer]['route-map_in'] + " in")
+                                            if 'route-map_out' in bgp[peer]:
+                                                self.output.append("neighbor "+  peer + " route-map " + bgp[peer]['route-map_out'] + " out")
+            if len(self.remove_output) >1 or len(self.output) > 0:
+                print ""
+                print "!",vrf_name
+                for a in self.remove_output:
+                    print a
+                print "!"
+                for i in self.output:
+                    print i
 
 
 
@@ -191,8 +192,6 @@ class ParseRedback(object):
     """
     """
     def __init__(self, cfg, intf=None):
-
-
         self.configuration = {}
         """
         self.configuration
@@ -244,7 +243,18 @@ class ParseRedback(object):
         self._getContextConfig(self.configfile) 
         self._parseContextConfig(intf)
         self.parsePort(self.configfile)
-    
+        self._remove_empty_context()
+
+    def _remove_empty_context(self):
+        """ Remove context's that are empty
+        """
+
+        for vrf in self.configuration.keys():
+            ctx = self.configuration[vrf]
+            if 'interface' in ctx:
+                if len(ctx['interface']) == 0:
+                    # remove ctx.
+                    del self.configuration[vrf]
     
     def _getContextConfig(self, cfg):
         """ Parse config and store contextconfig and RD
@@ -253,19 +263,16 @@ class ParseRedback(object):
         self.config = self.fh.readlines()
         self.current_context = None
         self.text = None
-        
         for line in self.config:
-            m = re.match('context\s(?P<context_name>[^ ]+)(\svpn-rd\s.*:(?P<vpn_id>[0-9]+))?', line)
+            m = re.match('context (?P<context_name>[^ ]+)( vpn-rd\s.*:(?P<vpn_id>[0-9]+))?', line)
             n = re.match('.*(^!\s\*\*\sEnd\sContext\s\*\*)', line, re.VERBOSE)
-            if n is not None:
+            if n is not None and self.text is not None:
                 self.configuration[self.current_context]['raw_config'] = self.text
             elif m is not None:
                 if self.current_context:
                     self.configuration[self.current_context]['raw_config'] = self.text
-
                 if m.group('context_name') is None:
                     raise InputError("context fuckedup? " + str(self.line))
-
                 self.current_context = m.group('context_name').strip()
                 self.configuration[self.current_context] = {}
                 self.configuration[self.current_context]['vpn_id'] = m.group('vpn_id')
@@ -275,7 +282,6 @@ class ParseRedback(object):
                     self.text += line
 
     
-
     def _parseContextConfig(self, intf = None):
         """ Parse config and find useful stuff
         """
@@ -285,10 +291,9 @@ class ParseRedback(object):
         self.intf = intf
         import radix
         if self.intf is None:
-            int_regex = 'interface .*GE'
+            int_regex = ' interface.*GE'
         else:
             int_regex = ' interface.*GE' + intf
-
         for self.current_context in self.configuration:
             self.config = self.configuration[self.current_context]['raw_config'].split('\n')
             self.configuration[self.current_context]['interface'] = {}
@@ -297,7 +302,6 @@ class ParseRedback(object):
             routing = self.configuration[self.current_context]['routing']
             self.configuration[self.current_context]['routing']['connected'] = radix.Radix()
             connected = self.configuration[self.current_context]['routing']['connected']
-        
             #find interfaces and attributes for them
             for line in self.config:
                 #interface
@@ -417,13 +421,19 @@ class ParseRedback(object):
                     # bind interface
                     self.current_intf = line.split()[2]
                     self.current_context = line.split()[3]
-                    if self.current_intf in self.configuration[self.current_context]['interface']:
-                        interface = self.configuration[self.current_context]['interface'][self.current_intf]
-                        interface['binded'] = True
+                    if self.current_context in self.configuration:
+                        if self.current_intf in self.configuration[self.current_context]['interface']:
+                            interface = self.configuration[self.current_context]['interface'][self.current_intf]
+                            interface['binded'] = True
+                        else:
+                            self.current_intf = None
+                            self.current_context = None
+                            continue
                     else:
                         self.current_intf = None
                         self.current_context = None
                         continue
+
                 elif re.match('\s\sl2vpn', line):
                     # l2vpn eompls
                     # TODO: handle l2vpn, ie EoMPLS
@@ -543,6 +553,7 @@ if __name__ == '__main__':
     parser.add_option("-t", "--to-router", dest = "to_router", help = "To Router")
     parser.add_option("-i", "--interface", dest = "to_int", help = "Interface on destination router")
     parser.add_option("-r", "--from-interface", dest = "from_int", help = "Interface on 'from'-router")
+    parser.add_option("-c", "--context", dest = "ctx", help = "Specify one context")
     parser.add_option("-o", "--output-file", dest = "output-file", help = "Output conf to file")
 
     ##
@@ -560,10 +571,9 @@ if __name__ == '__main__':
     
     if options.to_router:
         destConfigFile = "/misc/tele2.net/config/all/" + options.to_router.lower() + ".tele2.net"
-    
-    if options.from_int:  
-        from_router = ParseRedback(configFile, options.from_int)
-    else:
+    if options.ctx:
+        from_router = ParseRedback(configFile, ctx = options.ctx)
+    else:    
         from_router = ParseRedback(configFile)
     to_router = ParseCisco(destConfigFile)
 
@@ -575,8 +585,10 @@ if __name__ == '__main__':
         if options.to_int is None:
             print >> sys.stderr, "Please specify the 'destination interface'"
             sys.exit(1)
-        from_cfg.output_config(options.to_int)
-
+        if options.from_int is not None:
+            from_cfg.output_config(from_intf = options.from_int, to_intf = options.to_int)
+        else:
+            from_cfg.output_config(to_intf = options.to_int)
 
     # compare VRFs to determine whether we need to add anything
     if options.cmp_vrfs:
