@@ -166,7 +166,7 @@ class Config:
                                                 self.output.append("neighbor "+  peer + " timers 3 9")
                                                 self.output.append("address-family ipv4 " )
                                                 self.output.append("neighbor "+  peer + " default-originate route-map IPV4-CONDITIONAL-DEFAULT")
-                                                self.output.append("neighbor "+  peer + " remote-private-as")
+                                                self.output.append("neighbor "+  peer + " remove-private-as")
                                             
                                             self.output.append("neighbor "+  peer + "  activate")
                                             if 'route-map_in' in bgp[peer]:
@@ -627,7 +627,9 @@ if __name__ == '__main__':
                     vlan_id = 0
                 else:
                     vlan_id = interface['vlan_id']
+                if vlan_id in from_vlans:
+                    print "DUPLICATE", vlan_id, if_name
                 from_vlans[vlan_id] = interface
         res = set(from_vlans).intersection(set(to_router.es_ports[options.to_int]))
-        print "Colliding VLANs:", res
+        print "Colliding VLANs between router:", res
 
