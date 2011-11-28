@@ -16,11 +16,41 @@ ignore_vrfs = {
 
 
 class Config:
-    def __init__(self, config):
-        self.config = config
-        self.vrfs = {}
-        self._parse_shite()
+    def __init__(self, configFile):
 
+        self.configFile = configFile
+        self.config = None
+        self.vendor = None
+
+        self._get_vendor(self.configFile)
+        if self.vendor == 'redback':
+            self.r = ParseRedback(self.configFile)
+            self.config = self.r.configuration
+        if self.vendor == "cisco":
+            self.r = ParseCisco(self.configFile)
+            self.config = self.r.configuration
+        
+        self.vrfs = {}
+        #self._parse_shite()
+
+
+
+    def _get_vendor(self, configFile):
+        """ Cisco / redback ?
+        """
+        self.fh = open(configFile, "r")
+        self.lines = self.fh.readlines()
+        self.first = self.lines[0].split()[1]
+
+        if self.first == "redback":
+            self.vendor = "redback"
+        elif self.first == "cisco":
+            self.vendor = "cisco"
+        else:
+            print "ERROR, can't find any supported router vendor in file:", configFile
+            sys.exit()
+        
+        
 
     def _parse_shite(self):
         for vrf_name in self.config:
@@ -156,19 +186,20 @@ class Config:
                                             if current_vrf_id:
                                                 self.output.append("address-family ipv4 vrf 1257:" + current_vrf_id )
                                                 self.output.append("neighbor "+  peer + " remote-as " + bgp[peer]['remote-as'])
+                                                self.output.append("neighbor "+  peer + "  activate")
                                                 if 'description' in bgp[peer]:
                                                     self.output.append("neighbor "+  peer + " description " + bgp[peer]['description'])
                                                 self.output.append("neighbor "+  peer + " timers 3 9")
                                                 self.output.append("neighbor "+  peer + " as-override ")
                                             else:
                                                 self.output.append("neighbor "+  peer + " remote-as " + bgp[peer]['remote-as'])
+                                                self.output.append("neighbor "+  peer + "  activate")
                                                 self.output.append("neighbor "+  peer + " description " + bgp[peer]['description'])
                                                 self.output.append("neighbor "+  peer + " timers 3 9")
                                                 self.output.append("address-family ipv4 " )
                                                 self.output.append("neighbor "+  peer + " default-originate route-map IPV4-CONDITIONAL-DEFAULT")
                                                 self.output.append("neighbor "+  peer + " remove-private-as")
                                             
-                                            self.output.append("neighbor "+  peer + "  activate")
                                             if 'route-map_in' in bgp[peer]:
                                                 self.output.append("neighbor "+  peer + " route-map " + bgp[peer]['route-map_in'] + " in")
                                             if 'route-map_out' in bgp[peer]:
@@ -474,14 +505,14 @@ class ParseCisco():
     def __init__(self, cfg):
         self.fh = open(cfg, "r")
         self.config = self.fh.readlines()
-
         self.configuration = {} 
         self.configfile = cfg
+        self.parseConfig(self.config)
         self.es_ports = {}
-        self._parseVRF(cfg)
+        #self._parseVRF(cfg)
         self._find_ES_ports()
-
-
+    
+    
     def _parseVRF(self,cfg):
         """ Get all VRFs
         """
@@ -524,6 +555,69 @@ class ParseCisco():
                         self.es_ports[port] = {}
                     self.es_ports[port][vlan] = True
 
+    def parseConfig(self, cfg):
+        """ parse config and build self.configuration
+        interface Vlan314
+        description IP-PORT143252, Ostgotatrafiken AB, Linkoping, FLYTTAD TILL LKP30
+         ip address 212.247.208.157 255.255.255.252 secondary
+          ip address 193.15.57.254 255.255.255.128
+        """
+        self.confg = cfg
+        int_regex ="interface Vlan.*"
+        self.c_intf = None
+        self.c_vlan = None
+        self.c_desc = None
+        self.c_addr =[]
+        self.c_ip_h = []
+        self.c_vrf = None
+        for line in self.config:
+            if re.match(int_regex, line): 
+                self.c_intf = line.rstrip('\n')
+                a =re.match('interface Vlan(?P<vlan>[0-9]+)',line)
+                if a is not None:
+                    self.c_vlan = a.group('vlan')
+            elif (self.c_intf) and (len(line) - len(line.lstrip())) == 1:
+                ##description
+                if line.lstrip().startswith('description'):
+                    self.c_desc = line.lstrip(' description').rstrip('\n') 
+                #ip address pri+sec
+                if line.lstrip().startswith('ip vrf forwarding'):
+                    self.c_vrf = line.lstrip(' ip vrf forwarding').rstrip('\n')
+                    
+                if line.lstrip().startswith('ip address'):
+                 #primary
+                    self.c_addr.append(line.lstrip(' ip address').rstrip(' secondary\n') )
+                #ip-help
+                if line.lstrip().startswith('ip helper-address'):
+                    self.c_ip_h.append(line.lstrip(' ip helper-address').rstrip('\n'))
+            else:
+                if self.c_intf and self.c_vlan:
+                    if not self.c_vrf:
+                        ctx = 'local'
+                    else:
+                        ctx = self.c_vrf
+                    if not ctx in self.configuration:
+                        self.configuration[ctx] = {}
+                        self.configuration[ctx]['interface'] = {}
+                    self.configuration[ctx]['interface'][self.c_intf] = {}
+                    int = self.configuration[ctx]['interface'][self.c_intf]
+                    int['vlan'] = self.c_vlan
+                    if self.c_desc:
+                        int['description'] = self.c_desc
+                    for i in self.c_addr:
+                        
+                    
+                        print self.c_intf
+                        print self.c_vlan
+                        print self.c_vrf
+                        print self.c_desc
+                        print self.c_addr
+                        print self.c_ip_h
+                self.c_intf = None
+                self.c_vlan = None
+                self.c_desc = None
+                self.c_addr =[]
+                self.c_ip_h = []
 
     def printConfig(self):
 
@@ -553,7 +647,6 @@ if __name__ == '__main__':
     parser.add_option("-t", "--to-router", dest = "to_router", help = "To Router")
     parser.add_option("-i", "--interface", dest = "to_int", help = "Interface on destination router")
     parser.add_option("-r", "--from-interface", dest = "from_int", help = "Interface on 'from'-router")
-    parser.add_option("-c", "--context", dest = "ctx", help = "Specify one context")
     parser.add_option("-o", "--output-file", dest = "output-file", help = "Output conf to file")
 
     ##
@@ -567,18 +660,16 @@ if __name__ == '__main__':
         sys.exit(1)
 
     #from_router config
-    configFile = "/misc/tele2.net/config/all/" + options.from_router.lower() + ".tele2.net"
+    
+    fromConfigFile = "/misc/tele2.net/config/all/" + options.from_router.lower() + ".tele2.net"
     
     if options.to_router:
         destConfigFile = "/misc/tele2.net/config/all/" + options.to_router.lower() + ".tele2.net"
-    if options.ctx:
-        from_router = ParseRedback(configFile, ctx = options.ctx)
-    else:    
-        from_router = ParseRedback(configFile)
-    to_router = ParseCisco(destConfigFile)
+        
+    
 
-    from_cfg = Config(from_router.configuration)
-    to_cfg = Config(to_router.configuration)
+    from_cfg = Config(fromConfigFile)
+    to_cfg = Config(destConfigFile)
 
     # Print config
     if options.print_conf:
@@ -612,13 +703,13 @@ if __name__ == '__main__':
             print >> sys.stderr, "Please specify the 'destination interface'"
             sys.exit(1)
 
-        if options.to_int not in to_router.es_ports:
+        if options.to_int not in to_cfg.r.es_ports:
             print >> sys.stderr, "Destination port does not appear to be an ES+!"
             sys.exit(1)
 
         from_vlans = {}
-        for vrf_name in from_router.configuration:
-            vrf = from_router.configuration[vrf_name]
+        for vrf_name in from_cfg.config:
+            vrf = from_cfg.config[vrf_name]
             for if_name in vrf['interface']:
                 interface = vrf['interface'][if_name]
                 if 'binded' not in interface:
@@ -630,6 +721,6 @@ if __name__ == '__main__':
                 if vlan_id in from_vlans:
                     print "DUPLICATE", vlan_id, if_name
                 from_vlans[vlan_id] = interface
-        res = set(from_vlans).intersection(set(to_router.es_ports[options.to_int]))
+        res = set(from_vlans).intersection(set(to_cfg.r.es_ports[options.to_int]))
         print "Colliding VLANs between router:", res
 
